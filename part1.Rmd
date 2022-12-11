@@ -1,0 +1,570 @@
+---
+title: "Let's Predict Your Party!"
+subtitle: "Using machine learning to predict political affiliation in the United States."
+author: "Abigail Salle"
+date: "Fall 2022"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_depth: 6
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+The goal of this project is to predict an adult American’s political affiliation based on certain self-claimed demographics. More specifically, I wish to predict whether a person would align with the Democratic Party or Republican Party based off of their age, sex, education, race, etc.
+
+<br>
+
+### The Different Parties
+The Democratic Party  
+ The Democratic Party is one of the two main political parties in the United States.   
+  According to their official site, they are “fighting for a brighter, more equal future: rolling up [their] sleeves and organizing everywhere to build a better America for all.”  
+ Their platform includes universal healthcare, gun control, bodily autonomy, environmental justice, and equal & equitable opportunities for all.  
+ https://democrats.org  
+  <br>  
+   The Republican Party  
+ The Republican Party is the other main political party in the United States.  
+  According to their official site, they believe in “liberty, economic prosperity, preserving American values and traditions, and restoring the American dream for every citizen of this great nation.”  
+ Their platform includes lowering taxes, free-market capitalism, securing American borders, upholding traditional & Constitutional values, and social conservatism.  
+  https://www.rnc.org
+
+<br>
+
+### Why is this model useful?
+It could be useful to be able to predict political affiliation so parties or candidates know who to gear their campaigns towards. They can look at the typical trends and better plan how to move forward with their goals. 
+
+<br>
+
+### The Plan
+The plan is to load the data that I found on Stanford Dataverse. 
+I will then spend a significant amount of time cleaning the data and ensuring that it is ready to be used. 
+Once ready I will split the data into a training and testing set. 
+With the training set I will then perform exploratory data analysis to better understand the variables and what exactly we are dealing with.
+Afterwards I will create a recipe with cross validation folding to then begin fitting the training data to different models. 
+Evaluation of the models will let me know which is likely to work best in predicting the political affiliation. 
+Finally I will fit the testing data to those models to see how well the performance is on new, unseen data.
+This will allow me to make final conclusions.
+
+<br>
+
+## Getting Data Ready
+
+### Loading Packages
+I will first load all of the necessary packages for the entire project. I started with the packages I assumed I would need, then throughout working on the project I came back here to add any additonal needed.
+```{r,message=FALSE}
+# load packages
+library(tidyverse)
+library(tidymodels)
+tidymodels_prefer()
+library(zoo)
+library(base)
+library(inspectdf)
+library(stats)
+library(rsample)
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(corrplot)
+library(klaR) 
+library(janitor)
+library(randomForest)
+library(xgboost)
+library(kernlab)
+library(kknn)
+```
+
+### Loading Data
+I obtained my data from Harvard Dataverse, specifically the 2020 Cooperative Election Study Common Content. It is too large to upload to Github but it is copied below.  
+ https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi%3A10.7910/DVN/E9N6PH.  
+  I have downloaded it to my computer, uploaded it on R, and it is now here: 
+```{r}
+data <- read.csv("CES20_Common_OUTPUT_vv.csv")
+```
+<br>
+The data package also includes a survey of 61,000 American adults and a report that explains the questions and details of the survey. Some of the questions include asking participants their birth year, sex, martial status, military status, family income, etc. Aside from birth year, all of the questions are "multiple choice" format as opposed to writing in their answers. This allowed them to group all of the answers as integers, and then provide a key to what it all means, which I will also recreate in my codebook.
+
+<br> 
+
+### Cleaning Data
+While initially there are hundreds of predictor variables, I plan on using only 16. I chose these particular variables because I think they will be most useful with prediction and are most relevant to the study.  
+ Because participants enclosed their birth year and not their age, I am creating a variable called “age” approximated by subtracting their birth year from our current year. I will then eliminate the “birthyr” variable.
+ <br>
+```{r}
+data2 <- data[,c(9,10,11,12,44,56,57,127,239,242,249,250,253,256,274,278,325)]
+  # 239 is response variable 
+age <- 2022 - data2$birthyr # estimate age from given birth year
+data3 <- cbind(data2, age) # include it in set
+data4 <- data3[,-1] # remove birthyr
+```
+<br>
+Of the 61,000 observations and 17 variables, there were 465 missing values.  
+ To fix this issue, I will be filling in the missing values with the column's mean value.  
+  I feel that there are enough observations that using the mean will be an accurate estimate of what each missing value could have been. This is a convenient way to solve the issue because I do not want to just eliminate those missing pieces.
+  <br>
+```{r}
+sum(is.na(data4)) # check missing
+data5 <- na.aggregate(data4) # fill
+sum(is.na(data5)) # good to go
+```
+
+<br>
+I am turning all of the predictors into factors, except "age", because those are all categorical variables but R initially viewed them as numerical. They must be seen as factors because they are not continuous; for example, there cannot be a race of 2.5. For now, I will hold off on changing 'pid3' to factor because first I'll need to edit it.
+<br>
+```{r}
+# change into factors
+data6 <- data5
+data6$gender <- as.factor(data6$gender)
+data6$educ <- as.factor(data6$educ)
+data6$race <- as.factor(data6$race)
+data6$marstat <- as.factor(data6$marstat)
+data6$inputstate <- as.factor(data6$inputstate)
+data6$votereg <- as.factor(data6$votereg)
+data6$CC20_309e <- as.factor(data6$CC20_309e)
+data6$ownhome <- as.factor(data6$ownhome)
+data6$cit1 <- as.factor(data6$cit1)
+data6$immstat <- as.factor(data6$immstat)
+data6$employ <- as.factor(data6$employ)
+data6$urbancity <- as.factor(data6$urbancity)
+data6$sexuality <- as.factor(data6$sexuality)
+data6$pew_religimp <- as.factor(data6$pew_religimp)
+data6$faminc_new <- as.factor(data6$faminc_new)
+# checking to make sure all but 'age' are factors 
+inspect_types(data6)
+```
+
+Finally, I have decided to only keep participants who classify themselves as Democratic or Republican in the pid3 variable. This is because I feel like accuracy will be lost trying to predict Independent or Other, and for the sake of this project I am only focusing on the two main parties.  
+ Additionally, pid3 is our response variable and I want supervised learning and as accurate as possible, and so I think only keeping those two possibilities is best. 
+This means we now have 37,969 observations, which is still significant.  
+ Now I can also turn pid3 into a factor.
+
+```{r}
+# only keeping democrat or republican 
+data7<-data6[!(data6$pid3==3 | data6$pid3==4 | data6$pid3==5),]
+dim(data7)
+data7$pid3 <- as.factor(data7$pid3)
+```
+<br>
+
+### Splitting Data
+Prior to EDA, I will be splitting my data. 80% will go into the training set and 20% for the testing set. I will use stratified random sampling on the response variable “pid3” to ensure the distribution of Democrat and Republican is fair. I am splitting before EDA to ensure I do not see any of the testing data before it is time to evaluate.
+There are now over 30,000 observations in the training dataset and over 7,000 in the testing set, which seems appropriate.
+<br>
+
+```{r}
+# split the data
+
+set.seed(0120)
+
+polparty_split <- initial_split(data7, prop = 0.80, strata = pid3)
+
+polparty_train <- training(polparty_split)
+polparty_test <- testing(polparty_split)
+
+```
+  
+
+## Exploratory Data Analysis
+
+<br>
+Before I can be making and running models I will explore the data that I have to better understand it. I will start by checking out the predictor variables and seeing the frequency of the different levels of them.   
+ Then I really want to look into my response variable, pid3. First I will just see the distribution of it alone. Then I will break it down to see the distribution based on two predictor variables that I guess will be important, education and sex.
+ <br>
+ <br>
+
+### Frequency Chart
+```{r}
+x <- inspect_cat(polparty_train)
+show_plot(x, col_palette=1)
+```
+<br>
+Here I really just wanted to take a look at our predictors and how they are distributed. I can see that while education and state, for example, are pretty equally spread between answers, there is a big skew for answers on registration status and race. I think that is very important to note for later on when I try to see how impactful the predictors are on our response.
+
+<br>
+
+### Barplots 
+
+Distribution of our Response Variable:
+```{r}
+#plot
+ggplot(polparty_train, aes(pid3)) +
+  geom_bar(fill = "skyblue1", col="red") +
+  labs( title = "Barplot of Political Party Affililiation", 
+        x="Party (1=Democrat, 2=Republican)", 
+        y="Count" )
+```
+ <br>
+ From this I learn that there are more Democrats than Republicans in our data. I wish it had been a more fair split, but now I just know to look at percentages at predicting instead of just count since they do not start at the same amount.
+
+<br>
+  
+  Now, let's look at the distribution of response by education: 
+```{r}
+ # plot
+ggplot(polparty_train, aes(pid3)) +
+  geom_bar(color = "blue", fill="indianred2") +
+  facet_wrap(~educ, scales = "free_y") +
+  labs( title = "Barplot of Political Party by Highest Level of Education" , 
+        x= "Party" )
+```
+  <br>
+I found this to be particularly interesting and informative. We see that as one has more and more education, they are less likely to be Republican. The count for Democrat stays roughly the same, but when one graduates high school, then college, then masters degree, and so on the count for Republican constantly falls. 
+
+<br>
+
+Finally, let's look at the distribution of response by sex:  
+```{r}
+# plot
+ggplot(polparty_train, aes(pid3)) +
+  geom_bar(color = "blue", fill="indianred2") +
+  facet_wrap(~gender, scales = "free_y") +
+  labs( title = "Barplot of Political Party by Sex" , 
+        x= "Male                                               Female" )
+```
+  <br>
+  This is not as telling to me. In both sexes there are more Democrats than Republicans, but since it was not evenly distributed before this filter I do not think that means much and I do not think this tells us whether sex significantly impacts affiliation.
+  
+  <br>
+  <br>
+  
+## Model Building
+Now it is time to start model building! I will create 5 models: Logistic Regression, Pure Lasso, K Nearest Neighbors, Random Forest, and Boosted Trees.  
+ BUT FIRST, we have to take care of a few steps...
+  
+  <br>
+  
+### Recipe
+I have to create a recipe to allow me to move onto model fitting. I plug in my response variable and am using all of my predictors to affect this one recipe. I have to dummy my qualitative variables and will center and scale my recipe for convenience.
+<br>
+```{r}
+polparty_recipe <- recipe(pid3 ~ gender + educ + race + marstat + 
+                          inputstate + votereg + CC20_309e + ownhome +
+                          cit1 + immstat + employ + urbancity +
+                          sexuality + pew_religimp + faminc_new + age, 
+                          data = polparty_train) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric(), -all_outcomes()) 
+
+#polparty_recipe %>% 
+ # prep() %>% 
+ # juice()
+```
+<br>
+
+### Cross-Validation Folding 
+
+ We will use cross validation with 5 folds and stratify it across our response variable.
+ <br>
+ 
+```{r}
+set.seed(0120)
+polparty_fold <- vfold_cv(polparty_train, v = 5, strata = pid3)
+polparty_fold
+```
+
+<br> 
+
+And now, model time!   
+ Since this is a binary classification problem, I have decided that the metric I will be comparing for all of my models is roc_auc.
+
+<br>
+
+### Logistic Regression Model
+
+My first model I will do is Logistic Regression:
+
+```{r}
+# model 
+ log_reg <- logistic_reg() %>%
+   set_engine("glm") %>%
+   set_mode("classification")
+
+# workflow
+log_wkflow <- workflow() %>% 
+  add_recipe(polparty_recipe) %>%
+  add_model(log_reg) 
+```
+
+```{r, include=FALSE}
+# fit
+fit_fold_log <- fit_resamples(log_wkflow, polparty_fold)
+
+write_rds(fit_fold_log, file="project_log_results.rds")
+```
+
+<br>
+Let's see how it did:
+
+```{r}
+
+log_results <- read_rds(file="project_log_results.rds")
+
+collect_metrics(log_results)
+
+log_fit <- fit(log_wkflow, polparty_train)
+
+```
+<br>
+Here we see that the model performed with an roc_auc of roughly 83% on the training data.  
+ This to me was higher than expected for my first model and I am pleased with it, especially with it being such a simple model.
+
+
+### Lasso Model
+Next up, Lasso!
+
+```{r}
+# model
+lasso_spec <- multinom_reg(mode="classification", 
+                           engine = "glmnet", 
+                           penalty = tune(), 
+                           mixture = 1)
+
+# workflow
+lasso_wf <- workflow() %>% 
+  add_recipe(polparty_recipe) %>% 
+  add_model(lasso_spec)
+
+# grid
+param_grid_lasso <- grid_regular(penalty(range = c(-5, 5)), levels = 10)
+
+```
+
+```{r, eval=FALSE}
+# tune grid
+
+tune_res_lasso <- tune_grid(
+  lasso_wf,
+  resamples = polparty_fold, 
+  grid = param_grid_lasso
+)
+
+write_rds(tune_res_lasso, file="project_lasso_results.rds")
+```
+
+```{r}
+# print results 
+lasso_results <- read_rds(file="project_lasso_results.rds")
+lasso_results %>%
+  autoplot()
+```
+<br>
+I will just looking at the roc_auc curve to stay consistent..  
+ We see that smaller amounts of regularization give a greater value of roc_auc, which is wanted. The peak appears to be just above 0.8
+
+
+### K Nearest Neighbors
+
+Now I will create a KNN model:
+
+```{r}
+# model
+knn_spec <- nearest_neighbor(neighbors=tune()) %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification") 
+  translate(knn_spec)
+```
+
+* I am using code help from https://uo-datasci-specialization.github.io/c4-ml-fall-2020/slides/w6p1-knn/w6p1.pdf
+
+```{r, eval=FALSE}
+# tune model
+tune_res_knn <- tune::tune_grid(
+  knn_spec,
+  preprocessor = polparty_recipe,
+  resamples = polparty_fold,
+  control = tune::control_resamples(save_pred = TRUE)
+)
+
+write_rds(tune_res_knn, file="project_knn_results.rds")
+```
+
+```{r}
+# print results
+knn_results = read_rds(file="project_knn_results.rds")
+knn_results %>%
+  autoplot()
+```
+<br>
+Here, my roc_auc curve is constantly increasing which is awesome This tells us that the higher number of nearest neighbors the higher roc_auc we will get, which is what is wanted. However, it does not look like it is going to reach higher than 0.7 which is not great.  
+
+
+### Random Forest
+Model number 3: random forest.
+```{r}
+
+# random forest model 
+rf_spec <- rand_forest(mtry = 5) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+# workflow 
+rf_wf <- workflow() %>%
+  add_model(rf_spec %>% set_args(mtry = tune(), trees=tune(),min_n=tune())) %>%
+  add_recipe(polparty_recipe)
+
+# grid
+set.seed(0120)
+param_grid_rf <- grid_regular(trees(range = c(1, 100)), mtry(range = c(1, 5)),min_n(range = c(1, 5)),levels = 5)
+
+```
+
+```{r, eval=FALSE}
+# tune model
+tune_res_rf <- tune_grid(
+  rf_wf, 
+  resamples = polparty_fold, 
+  grid = param_grid_rf, 
+  metrics = metric_set(roc_auc)
+)
+
+write_rds(tune_res_rf, file="project_rf_results2.rds")
+```
+
+Let's see what it looks like:
+```{r}
+# print results
+rf_results <- read_rds(file="project_rf_results2.rds")
+rf_results %>% autoplot()
+```
+<br>
+<br>
+Here we see that the more trees, the higher auc_roc.  
+ Similarly, the more predictors also shows better.  
+  The most optimal model appears to be with 100 trees and 5 predictors.  
+   The node size does not seem to change much.
+
+### Boosted Trees
+Model 4: Boosted Trees with 2000 trees and 10 levels. 
+```{r}
+# model
+boost_spec <- boost_tree() %>%
+ set_mode("classification") %>%
+ set_engine("xgboost")
+
+# workflow
+boost_wf <- workflow() %>%
+  add_model(boost_spec %>% set_args(trees = tune())) %>%
+  add_recipe(polparty_recipe)
+
+set.seed(0120)
+param_grid_boost <- grid_regular(trees(range = c(1, 2000)), levels = 10)
+```
+
+```{r, eval=FALSE}
+# tune
+tune_res_boost <- tune_grid(
+  boost_wf,
+  resamples = polparty_fold,
+  grid = param_grid_boost,
+  metrics = metric_set(roc_auc)
+)
+write_rds(tune_res_boost, file="project_boost_results2.rds")
+```
+
+Let's see it: 
+```{r}
+# print results
+boost_results <- read_rds(file="project_boost_results2.rds")
+boost_results %>% autoplot()
+```
+<br>
+I see a clear best point here, around 240 trees where we see the roc_auc around .819. This was interesting to me to because I initially assumed more trees would be better, but this plot shows that is not the case.  
+ I learned that in fact the number of trees does not have much of an impact.  
+  With full transparency, I also learned that I should have tuned learn_rate in order to fix my y axis. It currently only shows from .79 to .82 which is why the shift is so drastic. However after attempting to do this, the model would not run after nearly 10 hours, so I accepted defeat and left it without the tuning.
+
+
+## Evaluation 
+
+To evaluate all of them together, I am first finding the best roc_auc of each model individually.
+```{r}
+# BEST LOGISTIC REGRESSION ROC AUC
+best_log <- collect_metrics(log_results)
+best_log_auc <- best_log[2,3]
+
+# BEST LASSO ROC AUC
+best_lasso <- collect_metrics(lasso_results) %>% 
+arrange(-mean)
+best_lasso_auc <- best_lasso[1,4]
+
+# BEST K NEAREST NEIGHBORS ROC AUC
+best_knn <- collect_metrics(knn_results) %>% 
+arrange(-mean)
+best_knn_auc <- best_knn[1,4]
+
+# BEST RANDOM FOREST ROC AUC
+best_rf <- collect_metrics(rf_results) %>% 
+arrange(-mean)
+best_rf_auc <- best_rf[1,6]
+
+
+# BEST BOOSTED TREES ROC AUC
+best_boost <- collect_metrics(boost_results) %>% 
+arrange(-mean)
+best_boost_auc <- best_boost[1,4]
+
+```
+<br>
+Now, I am binding them to see them all together, and selecting the highest.  
+ I see that the highest (just barely beating Logistic Regression) is the Lasso model.  
+  With that, I,ll take and finialize the workflow and fit to my testing data to see how it does on new, unseen data...
+
+```{r, warning=FALSE}
+
+each_best <- rbind(best_log_auc, 
+                   best_lasso_auc, 
+                   best_knn_auc, 
+                   best_rf_auc, 
+                   best_boost_auc) %>% as_tibble()
+each_best
+
+# the highest roc auc is from lasso...
+overall_best<- select_best(lasso_results) 
+overall_best
+
+final <- finalize_workflow(lasso_wf, overall_best)
+
+final_fit <- fit(final, data = polparty_test)
+```
+<br>
+Let's see it... 
+```{r, warning=FALSE}
+# plot of roc curve
+augment(final_fit, new_data = polparty_test) %>%
+  roc_curve(pid3, .pred_1) %>%
+  autoplot()
+
+# AUC of the ROC
+augment(final_fit, new_data = polparty_test) %>%
+  roc_auc(pid3, .pred_1)
+
+# heat map of confusion matrix
+augment(final_fit, new_data = polparty_test) %>%
+  conf_mat(truth = pid3, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
+```
+
+Our testing model turns out to even be a tad better than the training!  
+ The roc_auc is around 84% which I am pleased with. My goal was for my models to all be over 80%, but as long as my top one is then I am happy.
+
+<br>
+
+## Conclusion
+While I am concluding that my best model is lasso, all 5 of my models did relatively similar and well. Outside of K Nearest Neighbors, they were all above 80% which I am happy with. Clearly they are better than a coin flip, so I will call that a success.
+
+<br>
+
+It was super interesting and fun to go through this to see how easy it is to predict political affiliation.  
+ Not that generalizing people is always a good thing to do, but in some cases like for campaigning or predicting voter outcome, it can be very helpful. Plus here we learned that it is not too hard to do.
+ 
+<br>
+
+I know there are multiple ways my project could improve in the future. The biggest one for me would be using bigger, better models. For example, my ranges for my random forest was pretty small, however that took 9 hours to run and for the sake of time I chose not to try and improve it. Additionally, my exploratory data analysis could have been more extensive, but with all categorical predictors it was harder, plus I was excited to get into model building!
+
+<br>
+
+Overall, I learned a lot doing this and I am proud of my models and ability to predict political affiliation pretty well.
+  
